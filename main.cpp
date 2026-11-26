@@ -1,131 +1,123 @@
 #include "atm.h"
-
-#include <fstream>
-#include <iomanip>
-#include <iostream>
-#include <sstream>
-#include <string>
-#include <vector>
+#include "ui.h"
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
-class TeeBuf : public std::streambuf
+void ShowStatus(const ATM &atm)
 {
-public:
-    TeeBuf(std::streambuf *first, std::streambuf *second) : a(first), b(second) {}
+    PrintStatus({{"State", atm.GetStateName()},
+                 {"Money", std::to_string(atm.GetMoney()) + " UAH"},
+                 {"Tape", Num(atm.GetTapeLength()) + " m"},
+                 {"No tape", atm.GetNoTape() ? "YES" : "NO"},
+                 {"User", atm.GetLevelName()}});
+}
 
-protected:
-    int overflow(int c) override
-    {
-        if (c == EOF) return 0;
-        if (a->sputc(c) == EOF || b->sputc(c) == EOF) return EOF;
-        return c;
+void ShowControls()
+{
+    std::cout << "\n[ CONTROLS ]\n";
+    std::cout << "1. Login as guest\n";
+    std::cout << "2. Login as admin\n";
+    std::cout << "3. Logout\n";
+    std::cout << "4. Set money (admin)\n";
+    std::cout << "5. Set tape length (admin)\n";
+    std::cout << "6. Withdraw money\n";
+    std::cout << "0. Exit\n";
+    std::cout << "\nSelect action: ";
+}
+
+void LoginAdmin(ATM &atm)
+{
+    std::string password;
+    std::cout << "Enter password: ";
+    std::cin >> password;
+    if (atm.Authorize(UserLevel::Admin, password))
+        Done("Logged in as ADMIN");
+    else
+        Warn("Wrong password! Access denied.");
+}
+
+void ChangeMoney(ATM &atm)
+{
+    double sum;
+    if (!ReadValue("Enter money (0 - 100000, multiple of 5): ", sum))
+        return;
+    if (atm.GetLevel() != UserLevel::Admin)
+        Warn("Only ADMIN can change money!");
+    else if (atm.SetMoney(static_cast<int>(sum)))
+        Done();
+    else
+        Warn("Wrong sum! It must be from 0 to 100000 and multiple of 5.");
+}
+
+void ChangeTape(ATM &atm)
+{
+    double meters;
+    if (!ReadValue("Enter tape length in meters (0 - 30): ", meters))
+        return;
+    if (atm.GetLevel() != UserLevel::Admin)
+        Warn("Only ADMIN can change tape!");
+    else if (atm.SetTapeLength(meters))
+        Done();
+    else
+        Warn("Wrong length! It must be from 0 to 30 m.");
+}
+
+void TakeMoney(ATM &atm)
+{
+    double sum;
+    if (!ReadValue("Enter sum to withdraw: ", sum))
+        return;
+    int money = static_cast<int>(sum);
+    if (atm.GetState() == AtmState::NotWorking) {
+        Warn("ATM is not working!");
+        return;
     }
-    int sync() override
-    {
-        return (a->pubsync() == 0 && b->pubsync() == 0) ? 0 : -1;
+    if (atm.Withdraw(money)) {
+        Done("Take your money: " + std::to_string(money) + " UAH");
+        if (atm.GetNoTape())
+            Warn("Receipt tape is almost over!");
+    } else if (atm.GetState() == AtmState::Error) {
+        Warn("Not enough money in ATM. State: ERROR (call admin)");
+    } else {
+        Warn("Wrong sum! It must be multiple of 5 and not bigger than money in ATM.");
     }
+}
 
-private:
-    std::streambuf *a;
-    std::streambuf *b;
-};
-
-std::ofstream fout("output.txt");
-TeeBuf tee(std::cout.rdbuf(), fout.rdbuf());
-std::streambuf *consoleBuf = std::cout.rdbuf(&tee);
-
-struct RestoreCout
+void ControlPanel(ATM &atm)
 {
-    ~RestoreCout()
-    {
-        std::cout.flush();
-        std::cout.rdbuf(consoleBuf);
+    while (true) {
+        PrintBox("ATM CONTROL PANEL (VARIANT 10)");
+        ShowStatus(atm);
+        ShowControls();
+
+        int choice;
+        if (!(std::cin >> choice)) {
+            std::cin.clear();
+            std::cin.ignore(1000, '\n');
+            continue;
+        }
+        if (choice == 0)
+            return;
+
+        switch (choice) {
+        case 1:
+            atm.Authorize(UserLevel::Guest);
+            Done("Logged in as GUEST");
+            break;
+        case 2: LoginAdmin(atm); break;
+        case 3:
+            atm.Logout();
+            Done("Logged out");
+            break;
+        case 4: ChangeMoney(atm); break;
+        case 5: ChangeTape(atm); break;
+        case 6: TakeMoney(atm); break;
+        default: Warn("Unknown action!");
+        }
+        WaitEnter();
     }
-} restoreCout;
-
-void print(const std::string &text)
-{
-    std::cout << text << std::endl;
-}
-
-void title(const std::string &text)
-{
-    const int width = 78;
-    int left = (width - 2 - static_cast<int>(text.size())) / 2;
-    int right = width - 2 - static_cast<int>(text.size()) - left;
-    print(std::string(width, '-'));
-    print("|" + std::string(left, ' ') + text + std::string(right, ' ') + "|");
-    print(std::string(width, '-'));
-}
-
-void section(const std::string &text)
-{
-    print("");
-    print("[ " + text + " ]");
-}
-
-void blockBegin(const std::string &name)
-{
-    const int width = 40;
-    int left = (width - 2 - static_cast<int>(name.size())) / 2;
-    int right = width - 2 - static_cast<int>(name.size()) - left;
-    print(std::string(left, '-') + " " + name + " " + std::string(right, '-'));
-}
-
-void blockEnd()
-{
-    print(std::string(40, '-'));
-}
-
-void field(const std::string &name, const std::string &value)
-{
-    std::ostringstream s;
-    s << std::left << std::setw(14) << name << ": " << value;
-    print(s.str());
-}
-
-std::string line(const std::vector<int> &widths)
-{
-    std::string s;
-    for (int w : widths)
-        s += "+" + std::string(w + 2, '-');
-    return s + "+";
-}
-
-std::string row(const std::vector<std::string> &cells, const std::vector<int> &widths)
-{
-    std::ostringstream s;
-    for (size_t i = 0; i < cells.size(); i++)
-        s << "| " << std::left << std::setw(widths[i]) << cells[i] << " ";
-    s << "|";
-    return s.str();
-}
-
-std::string num(double value, int digits = 2)
-{
-    std::ostringstream s;
-    s << std::fixed << std::setprecision(digits) << value;
-    return s.str();
-}
-
-void showState(const std::string &name, const ATM &atm)
-{
-    blockBegin(name);
-    field("State", atm.GetStateName());
-    field("Money", std::to_string(atm.GetMoney()) + " UAH");
-    field("Tape", num(atm.GetTapeLength()) + " m");
-    field("No tape", atm.GetNoTape() ? "YES" : "NO");
-    field("User", atm.GetLevelName());
-    blockEnd();
-}
-
-std::vector<std::string> stateCells(const ATM &atm)
-{
-    return {atm.GetStateName(), std::to_string(atm.GetMoney()), num(atm.GetTapeLength()),
-            atm.GetNoTape() ? "YES" : "NO", atm.GetLevelName()};
 }
 
 int main()
@@ -134,72 +126,10 @@ int main()
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
-    std::ifstream fin("input.txt");
-    if (!fin) {
-        print("ERROR: cannot open input.txt");
-        return 1;
-    }
-
     ATM atm;
     atm.Reset();
+    ControlPanel(atm);
 
-    title("ATM CONTROL PANEL (VARIANT 10)");
-    section("INITIAL STATE AFTER Reset()");
-    showState("STATE", atm);
-
-    section("COMMANDS FROM input.txt");
-    std::vector<int> w = {2, 16, 8, 11, 5, 4, 7, 5};
-    print(line(w));
-    print(row({"#", "Command", "Result", "State", "Money", "Tape", "No tape", "User"}, w));
-    print(line(w));
-
-    std::string command;
-    int step = 1;
-    while (fin >> command) {
-        bool ok = false;
-        std::string text = command;
-
-        if (command == "login") {
-            std::string who, password;
-            fin >> who;
-            text += " " + who;
-            if (who == "admin") {
-                fin >> password;
-                text += " " + password;
-                ok = atm.Authorize(UserLevel::Admin, password);
-            } else {
-                ok = atm.Authorize(UserLevel::Guest);
-            }
-        } else if (command == "logout") {
-            atm.Logout();
-            ok = true;
-        } else if (command == "money") {
-            int sum;
-            fin >> sum;
-            text += " " + std::to_string(sum);
-            ok = atm.SetMoney(sum);
-        } else if (command == "tape") {
-            double value;
-            fin >> value;
-            text += " " + num(value);
-            ok = atm.SetTapeLength(value);
-        } else if (command == "withdraw") {
-            int sum;
-            fin >> sum;
-            text += " " + std::to_string(sum);
-            ok = atm.Withdraw(sum);
-        }
-
-        std::vector<std::string> cells = {std::to_string(step++), text, ok ? "OK" : "REJECTED"};
-        for (const std::string &cell : stateCells(atm))
-            cells.push_back(cell);
-        print(row(cells, w));
-    }
-    print(line(w));
-
-    section("FINAL STATE");
-    showState("STATE", atm);
-    print("");
-    print(">> Results saved to output.txt");
+    PrintBox("ATM IS TURNED OFF. GOODBYE!");
     return 0;
 }
