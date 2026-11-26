@@ -88,7 +88,7 @@ void TakeMoney(ATM &atm)
 void ControlPanel(ATM &atm)
 {
     while (true) {
-        PrintBox("ATM CONTROL PANEL (VARIANT 10)");
+        PrintBox("ATM CONTROL PANEL");
         ShowStatus(atm);
         ShowControls();
 
